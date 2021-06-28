@@ -27,6 +27,21 @@ require_once "$docroot/plugins/$plugin/include/Legacy.php";
 <?eval('?>'.parse_file("$docroot/plugins/$plugin/FanSettings.page"))?>
 <?else:?>
 <?
+/* Get a list of directories at $root. */
+function listDir($root) {
+	$iter = new RecursiveIteratorIterator(
+			new RecursiveDirectoryIterator($root, 
+			RecursiveDirectoryIterator::SKIP_DOTS),
+			RecursiveIteratorIterator::SELF_FIRST,
+			RecursiveIteratorIterator::CATCH_GET_CHILD);
+	$paths = array();
+	foreach ($iter as $path => $fileinfo) {
+		if (! $fileinfo->isDir()) $paths[] = $path;
+	}
+	return $paths;
+}
+
+
 function parse_autofan_cfg($plugin,$index) {
   global $docroot;
   $ram = "$docroot/plugins/$plugin/default.cfg";
@@ -71,6 +86,51 @@ function data_disks($disk) {
 }
 function cache_disks($disk) {
   return $disk['type']=='Cache' && strpos($disk['status'],'_NP')===false;
+}
+function afterlast($str,$search){
+	$pos=strpos($str, $search);
+	$r=substr($str, $pos+strlen($search), strlen($str)-1);
+	return $r;
+}
+/* Get an array of all unassigned disks. */
+/* Adapted from https://github.com/dlandon/unassigned.devices/blob/master/source/include/lib.php */
+function get_unassigned_disks() {
+	global $disks;
+	
+	$ud_disks = $paths = $unraid_disks = array();
+
+	/* Get all devices by id. */
+	foreach (listDir("/dev/disk/by-id/") as $p) {
+	    
+		$r = realpath($p);
+		/* Only /dev/sd*, /dev/hd*, and /dev/nvme* devices. */
+		if (! is_bool(strpos($r, "/dev/sd")) || !is_bool(strpos($r, "/dev/hd")) || !is_bool(strpos($r, "/dev/nvme"))) {
+			$paths[$r] = $p;
+		}
+	}
+	ksort($paths, SORT_NATURAL);
+
+	/* Get all unraid disk devices (array disks, cache, and pool devices) */
+	foreach ($disks as $d) {
+		if ($d['device']) {
+			$unraid_disks[] = "/dev/".$d['device'];
+		}
+	}
+
+	/* Create the array of unassigned devices. */
+	foreach ($paths as $path => $d) {
+		if (($d != "") && (preg_match("#^(.(?!wwn|part))*$#", $d))) {
+			if (! in_array($path, $unraid_disks)) {
+				if (in_array($path, array_map(function($ar){return $ar['device'];}, $ud_disks)) ) continue;
+				$m = array_values(preg_grep("|$d.*-part\d+|", $paths));
+				$name = afterlast($d,'ata-');
+				$device = afterlast($path,'/dev/');		
+				natsort($m);
+				$ud_disks[$d] = array("device"=>$device,"type"=>"ata","name"=>$name,"partitions"=>$m);			    
+			}
+		}
+	}
+	return $ud_disks;
 }
 ?>
 <script>
@@ -137,6 +197,8 @@ $(function() {
     $('#pwm').prop('disabled',true);
   }
 });
+
+
 </script>
 
 <span class="bitstream" style="float:right;margin-right:12px"><?=exec("$fName -V")?></span>
@@ -184,6 +246,9 @@ _(Exclude drives)_:
   <?endforeach;?>
   <?foreach (array_filter($disks,'cache_disks') as $disk):?>
   <?=mk_option_check($cfg['exclude'],$disk['device'],sprintf('%s (%s)',_(my_disk($disk['name']),3),$disk['device']))?>
+  <?endforeach;?>
+   <?foreach (get_unassigned_disks() as $disk):?>
+  <?=mk_option_check($cfg['exclude'],$disk['device'],sprintf('%s (%s)',$disk['name'],$disk['device']))?>
   <?endforeach;?>
   </select>
 
